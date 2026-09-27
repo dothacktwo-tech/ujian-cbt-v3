@@ -81,7 +81,7 @@ interface SessionData {
   nis?: string;
 }
 
-const SESSION_SECRET = process.env.SESSION_SECRET || 'cbt-super-secret-session-key-1234567890';
+const SESSION_SIGN_KEY = 'cbt-super-secret-session-key-1234567890';
 
 // Stateless signed session token
 function createSessionToken(data: SessionData): string {
@@ -89,7 +89,7 @@ function createSessionToken(data: SessionData): string {
     ...data,
     exp: Date.now() + 24 * 60 * 60 * 1000 // 24 hours expiry
   });
-  const hmac = crypto.createHmac('sha256', SESSION_SECRET);
+  const hmac = crypto.createHmac('sha256', SESSION_SIGN_KEY);
   hmac.update(payload);
   const signature = hmac.digest('base64url');
   const payloadBase64 = Buffer.from(payload).toString('base64url');
@@ -102,7 +102,7 @@ function verifySessionToken(token: string): SessionData | null {
     if (!payloadBase64 || !signature) return null;
     
     // Verify HMAC signature
-    const hmac = crypto.createHmac('sha256', SESSION_SECRET);
+    const hmac = crypto.createHmac('sha256', SESSION_SIGN_KEY);
     hmac.update(payloadBase64);
     const expectedSignature = hmac.digest('base64url');
     
@@ -335,7 +335,7 @@ router.post('/logout', (req: Request, res: Response) => {
 router.get('/me', async (req: Request, res: Response) => {
   const user = (req as any).user as SessionData | null;
   if (!user) {
-    return res.status(401).json({ success: false, message: 'Belum terautentikasi' });
+    return res.json({ success: false, authenticated: false, user: null, message: 'Belum terautentikasi' });
   }
 
   const db = await getDb();

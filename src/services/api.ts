@@ -51,17 +51,21 @@ export async function apiRequest<T = any>(
     if (!res.ok) {
       data.success = false;
 
-      // Log server error details in browser console for fast debugging
-      console.error(`[API Error ${res.status}]`, {
-        endpoint,
-        status: res.status,
-        statusText: res.statusText,
-        response: data,
-      });
+      // Only log severe server errors (5xx) with console.error to avoid spamming errors on expected 401 auth checks
+      if (res.status >= 500) {
+        console.error(`[API Server Error ${res.status}]`, {
+          endpoint,
+          status: res.status,
+          statusText: res.statusText,
+          response: data,
+        });
+      } else {
+        console.info(`[API ${res.status}]`, endpoint, data.message || res.statusText);
+      }
 
       if (!data.message) {
         if (res.status === 401) {
-          data.message = 'Email/Username atau Password salah.';
+          data.message = 'Silakan login terlebih dahulu.';
         } else if (res.status === 403) {
           data.message = 'Akses ditolak: Anda tidak memiliki izin untuk tindakan ini.';
         } else if (res.status === 404) {
