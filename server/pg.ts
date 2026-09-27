@@ -30,11 +30,11 @@ const { Pool, Client } = pg;
 const isServerless = !!(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.SERVERLESS);
 
 export const pgConfig: any = {
-  host: 'aws-0-ap-northeast-1.pooler.supabase.com',
-  port: 5432,
-  database: 'postgres',
-  user: 'postgres',
-  password: '',
+  host: process.env.PGHOST || 'aws-0-ap-south-1.pooler.supabase.com',
+  port: parseInt(process.env.PGPORT || '6543', 10),
+  database: process.env.PGDATABASE || 'postgres',
+  user: process.env.PGUSER || 'postgres.nsieuoxrzanautfecwtu',
+  password: process.env.PGPASSWORD || process.env.SUPABASE_DB_PASSWORD || '',
   ssl: {
     rejectUnauthorized: false,
   },
@@ -56,7 +56,7 @@ export function ensurePgConfigResolved(): Promise<void> {
       try {
         const parsed = new URL(dbUrl);
         pgConfig.host = parsed.hostname;
-        pgConfig.port = parseInt(parsed.port || '5432', 10);
+        pgConfig.port = parseInt(parsed.port || '6543', 10);
         pgConfig.database = parsed.pathname.substring(1);
         pgConfig.user = decodeURIComponent(parsed.username);
         pgConfig.password = decodeURIComponent(parsed.password);
@@ -65,10 +65,10 @@ export function ensurePgConfigResolved(): Promise<void> {
         console.error('[pgConfig Parse Error] Failed to parse DATABASE_URL:', err.message);
       }
     } else {
-      pgConfig.host = process.env.PGHOST || 'db.wpzvwwxnfurztyejkhsm.supabase.co';
-      pgConfig.port = parseInt(process.env.PGPORT || '5432', 10);
+      pgConfig.host = process.env.PGHOST || 'aws-0-ap-south-1.pooler.supabase.com';
+      pgConfig.port = parseInt(process.env.PGPORT || '6543', 10);
       pgConfig.database = process.env.PGDATABASE || 'postgres';
-      pgConfig.user = process.env.PGUSER || 'postgres';
+      pgConfig.user = process.env.PGUSER || 'postgres.nsieuoxrzanautfecwtu';
       pgConfig.password = process.env.PGPASSWORD || process.env.SUPABASE_DB_PASSWORD || '';
     }
 

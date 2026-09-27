@@ -10,10 +10,10 @@ const DB_FILE = path.resolve(process.cwd(), 'data', 'cbt.sqlite');
 
 const pgConfig = {
   connectionString: process.env.DATABASE_URL,
-  host: process.env.PGHOST,
-  port: parseInt(process.env.PGPORT || '5432', 10),
+  host: process.env.PGHOST || 'aws-0-ap-south-1.pooler.supabase.com',
+  port: parseInt(process.env.PGPORT || '6543', 10),
   database: process.env.PGDATABASE || 'postgres',
-  user: process.env.PGUSER || 'postgres',
+  user: process.env.PGUSER || 'postgres.nsieuoxrzanautfecwtu',
   password: process.env.PGPASSWORD || process.env.SUPABASE_DB_PASSWORD || '',
   ssl: {
     rejectUnauthorized: false,

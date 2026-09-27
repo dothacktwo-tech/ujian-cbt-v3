@@ -390,11 +390,11 @@ export const SettingsPage: React.FC = () => {
   };
 
   const handleCopySupabaseConfig = () => {
-    const configText = `SUPABASE_URL=https://wpzvwwxnfurztyejkhsm.supabase.co
-host=db.wpzvwwxnfurztyejkhsm.supabase.co
-port=5432
+    const configText = `SUPABASE_URL=https://nsieuoxrzanautfecwtu.supabase.co
+host=aws-0-ap-south-1.pooler.supabase.com
+port=6543
 database=postgres
-user=postgres`;
+user=postgres.nsieuoxrzanautfecwtu`;
     navigator.clipboard.writeText(configText);
     toast.success('Kredensial database Supabase disalin ke clipboard.');
   };
@@ -1179,18 +1179,18 @@ user=postgres`;
               <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
                 <span className="text-slate-500 block mb-0.5">Supabase Project URL:</span>
                 <p className="font-mono font-semibold text-slate-800 break-all">
-                  https://wpzvwwxnfurztyejkhsm.supabase.co
+                  https://nsieuoxrzanautfecwtu.supabase.co
                 </p>
               </div>
               <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
-                <span className="text-slate-500 block mb-0.5">Host PostgreSQL:</span>
+                <span className="text-slate-500 block mb-0.5">Host PostgreSQL (Pooler):</span>
                 <p className="font-mono font-semibold text-slate-800">
-                  db.wpzvwwxnfurztyejkhsm.supabase.co:5432
+                  aws-0-ap-south-1.pooler.supabase.com:6543
                 </p>
               </div>
               <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
                 <span className="text-slate-500 block mb-0.5">Database / User:</span>
-                <p className="font-mono font-semibold text-slate-800">postgres / postgres</p>
+                <p className="font-mono font-semibold text-slate-800">postgres / postgres.nsieuoxrzanautfecwtu</p>
               </div>
               <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
                 <span className="text-slate-500 block mb-0.5">Status Proteksi:</span>
@@ -1363,7 +1363,7 @@ user=postgres`;
               leftIcon={<KeyRound className="w-4 h-4" />}
             />
             <p className="text-[11px] text-slate-500">
-              Host: <code className="text-slate-800 font-semibold">db.wpzvwwxnfurztyejkhsm.supabase.co:5432</code> (User: postgres, DB: postgres)
+              Host: <code className="text-slate-800 font-semibold">aws-0-ap-south-1.pooler.supabase.com:6543</code> (User: postgres.nsieuoxrzanautfecwtu, DB: postgres)
             </p>
           </div>
 
