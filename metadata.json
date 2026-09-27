@@ -1,0 +1,8 @@
+{
+  "name": "Remix CBT Ujian - Sistem Ujian Berbasis Komputer",
+  "description": "Aplikasi CBT (Computer Based Test) modern, responsif, dan terstruktur untuk pelaksanaan dan manajemen ujian sekolah.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
