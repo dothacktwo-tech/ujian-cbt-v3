@@ -10,7 +10,9 @@ import bcrypt from 'bcryptjs';
 import { getPgPool, SUPABASE_SQL_STATEMENTS, ensurePgConfigResolved, pgConfig } from './pg.js';
 import { AsyncLocalStorage } from 'async_hooks';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 
+const require = createRequire(import.meta.url);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -39,24 +41,34 @@ async function getSqlJsEngine() {
   cachedSqlJsPromise = (async () => {
     let wasmBinary: Buffer | undefined;
 
-    // 1. Cek jalur lokal di sistem berkas (node_modules)
-    const localCandidates = [
-      path.join(process.cwd(), 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
-      path.join(__dirname, 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
-      path.join(__dirname, '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
-      path.join(process.cwd(), 'sql-wasm.wasm'),
-    ];
+    // 1. Cek via require.resolve untuk lokasi ter-bundle
+    try {
+      const resolvedPath = require.resolve('sql.js/dist/sql-wasm.wasm');
+      if (fs.existsSync(resolvedPath)) {
+        wasmBinary = fs.readFileSync(resolvedPath);
+      }
+    } catch (_) {}
 
-    for (const p of localCandidates) {
-      if (fs.existsSync(p)) {
-        try {
-          wasmBinary = fs.readFileSync(p);
-          break;
-        } catch (_) {}
+    // 2. Cek jalur lokal alternatif di sistem berkas
+    if (!wasmBinary) {
+      const localCandidates = [
+        path.join(process.cwd(), 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
+        path.join(__dirname, 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
+        path.join(__dirname, '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
+        path.join(process.cwd(), 'sql-wasm.wasm'),
+      ];
+
+      for (const p of localCandidates) {
+        if (fs.existsSync(p)) {
+          try {
+            wasmBinary = fs.readFileSync(p);
+            break;
+          } catch (_) {}
+        }
       }
     }
 
-    // 2. Jika tidak ditemukan di sistem berkas (misal di Vercel serverless tanpa file asset), fetch binary buffer
+    // 3. Jika tidak ditemukan di sistem berkas (misal di Vercel serverless tanpa file asset), fetch binary buffer
     if (!wasmBinary && typeof fetch === 'function') {
       try {
         const wasmRes = await fetch('https://unpkg.com/sql.js@1.14.2/dist/sql-wasm.wasm');
@@ -68,16 +80,16 @@ async function getSqlJsEngine() {
       }
     }
 
-    return initSqlJs(
-      wasmBinary
-        ? {
-            wasmBinary: wasmBinary.buffer.slice(
-              wasmBinary.byteOffset,
-              wasmBinary.byteOffset + wasmBinary.byteLength
-            ) as ArrayBuffer,
-          }
-        : {}
-    );
+    if (!wasmBinary) {
+      throw new Error('Database WASM engine binary tidak dapat dimuat. Silakan periksa kembali konfigurasi DATABASE_URL di Vercel.');
+    }
+
+    return initSqlJs({
+      wasmBinary: wasmBinary.buffer.slice(
+        wasmBinary.byteOffset,
+        wasmBinary.byteOffset + wasmBinary.byteLength
+      ) as ArrayBuffer,
+    });
   })();
 
   return cachedSqlJsPromise;

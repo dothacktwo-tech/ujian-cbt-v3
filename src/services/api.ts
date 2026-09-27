@@ -37,12 +37,23 @@ export async function apiRequest<T = any>(
     });
 
     let data: any;
-    try {
-      data = await res.json();
-    } catch {
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      try {
+        data = await res.json();
+      } catch {
+        data = null;
+      }
+    }
+
+    if (!data) {
+      const text = await res.text().catch(() => '');
+      const isHtml = text.includes('<!DOCTYPE') || text.includes('<html') || text.includes('<pre>');
       data = {
         success: res.ok,
-        message: res.statusText || (res.ok ? 'Sukses' : 'Terjadi kesalahan pada respon server.'),
+        message: text && !isHtml && text.length < 200
+          ? text
+          : (res.ok ? 'Sukses' : `Terjadi kesalahan pada server (HTTP ${res.status}). Silakan coba beberapa saat lagi.`),
       };
     }
 

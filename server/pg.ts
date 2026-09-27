@@ -13,7 +13,13 @@ export function ipv4Lookup(hostname: string, options: any, callback: (err: NodeJ
     callback = options;
     options = {};
   }
-  dns.lookup(hostname, { ...options, family: 4 }, callback);
+  dns.lookup(hostname, { ...options, family: 4, all: false }, (err, address) => {
+    if (err) {
+      dns.lookup(hostname, options, callback);
+    } else {
+      callback(null, address, 4);
+    }
+  });
 }
 
 dotenv.config({ override: true });

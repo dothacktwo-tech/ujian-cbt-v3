@@ -56,4 +56,17 @@ app.use(authMiddleware);
 // Mount API Router
 app.use('/api', router);
 
+// Global Error Handler for Express to prevent HTML 500 error pages on Vercel
+app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('[Express Serverless Global Error]:', err);
+  if (res.headersSent) return;
+
+  const status = typeof err.status === 'number' ? err.status : 500;
+  res.status(status).json({
+    success: false,
+    message: err.message || 'Terjadi kesalahan internal pada server.',
+    error: process.env.NODE_ENV !== 'production' ? (err.stack || err.message) : undefined,
+  });
+});
+
 export default app;
