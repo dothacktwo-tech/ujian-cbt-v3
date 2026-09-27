@@ -47,8 +47,11 @@ export const CbtLoginPage: React.FC<CbtLoginPageProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim() || !password.trim()) {
-      setError('Silakan masukkan username dan password Anda.');
+    const cleanUser = username.trim();
+    const cleanPass = password;
+
+    if (!cleanUser || !cleanPass) {
+      setError('Silakan masukkan username/email dan password Anda.');
       return;
     }
 
@@ -56,7 +59,7 @@ export const CbtLoginPage: React.FC<CbtLoginPageProps> = ({
     setError('');
 
     try {
-      const res = await login(username.trim(), password.trim());
+      const res = await login(cleanUser, cleanPass);
       if (res.success) {
         if (role === 'admin' && res.role !== 'admin') {
           setError('Akun ini terdaftar sebagai Siswa. Mengarahkan ke Portal Siswa...');
@@ -70,10 +73,19 @@ export const CbtLoginPage: React.FC<CbtLoginPageProps> = ({
           toast.success('Login berhasil! Selamat datang.');
         }
       } else {
-        setError(res.message || 'Login gagal. Silakan periksa kembali username dan password Anda.');
+        const failureMessage = res.message || 'Email/Username atau Password salah.';
+        setError(failureMessage);
+        if (res.statusCode && res.statusCode >= 500) {
+          toast.error('Gagal terhubung ke database/server. Periksa log server.');
+        } else {
+          toast.error(failureMessage);
+        }
       }
     } catch (err: any) {
-      setError(err.message || 'Terjadi gangguan koneksi jaringan.');
+      console.error('[CbtLoginPage] Form Submit Error:', err);
+      const errText = err?.message || 'Terjadi gangguan koneksi ke server CBT.';
+      setError(errText);
+      toast.error(errText);
     } finally {
       setLoading(false);
     }

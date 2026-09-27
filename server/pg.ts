@@ -34,7 +34,7 @@ export const pgConfig: any = {
   },
   max: isServerless ? 2 : 10,
   idleTimeoutMillis: isServerless ? 1000 : 30000,
-  connectionTimeoutMillis: 30000, // Ample time (30s) for Neon to wake up from scale-to-zero sleep!
+  connectionTimeoutMillis: 5000, // 5s connection timeout for responsive failure handling
   family: 4,
   lookup: ipv4Lookup,
 };

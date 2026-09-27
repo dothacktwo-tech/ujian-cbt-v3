@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { getDb, dbStorage } from './db.js';
 import { testPostgresConnection, pgConfig, runSupabaseAutoMigration, SUPABASE_SQL_STATEMENTS, getPgPool } from './pg.js';
+import { getSupabaseClient, checkSupabaseEnv, authenticateWithSupabase } from './supabase.js';
 
 export const router = express.Router();
 
@@ -171,18 +172,72 @@ function requireAuth(role?: 'admin' | 'student') {
 // ==========================================
 
 router.post('/login', async (req: Request, res: Response) => {
+  // 1. Validasi & Sanitasi Input Login
+  const rawIdentifier = req.body?.username || req.body?.email || req.body?.identifier;
+  const rawPassword = req.body?.password;
+
+  if (typeof rawIdentifier !== 'string' || typeof rawPassword !== 'string') {
+    return res.status(400).json({
+      success: false,
+      message: 'Format input tidak valid. Email/Username dan password harus berupa teks.',
+    });
+  }
+
+  const cleanIdentifier = rawIdentifier.trim();
+  const cleanPassword = rawPassword;
+
+  if (!cleanIdentifier || !cleanPassword) {
+    return res.status(400).json({
+      success: false,
+      message: 'Email/Username dan Password tidak boleh kosong.',
+    });
+  }
+
+  // 2. Pemeriksaan Environment Supabase (Logging Runtime Diagnostik)
+  const supabaseEnv = checkSupabaseEnv();
+  if (!supabaseEnv.valid) {
+    console.warn('[Login Auth Diagnostic] Peringatan: Variabel lingkungan Supabase belum lengkap di serverless/server runtime.');
+  }
+
   try {
-    const { username, password } = req.body;
-    if (!username || !password) {
-      return res.status(400).json({ success: false, message: 'Username dan password wajib diisi.' });
+    // 3. Coba Autentikasi via Supabase Auth jika identifier berupa email
+    if (cleanIdentifier.includes('@')) {
+      const supabaseAuth = await authenticateWithSupabase(cleanIdentifier, cleanPassword);
+      if (supabaseAuth.success && supabaseAuth.user) {
+        console.info('[Login Auth] Autentikasi Supabase Auth berhasil untuk email:', cleanIdentifier);
+        const sessionData: SessionData = {
+          userId: supabaseAuth.user.id,
+          role: (supabaseAuth.user.user_metadata?.role as any) || 'admin',
+          username: supabaseAuth.user.email || cleanIdentifier,
+          name: supabaseAuth.user.user_metadata?.name || supabaseAuth.user.email || 'Pengguna Terverifikasi',
+        };
+        const token = createSessionToken(sessionData);
+        res.cookie('cbt_token', token, {
+          httpOnly: true,
+          maxAge: 86400000 * 7,
+          sameSite: 'lax',
+          secure: process.env.NODE_ENV === 'production',
+        });
+        return res.json({
+          success: true,
+          token,
+          user: sessionData,
+        });
+      } else if (supabaseAuth.statusCode === 401) {
+        return res.status(401).json({
+          success: false,
+          message: 'Email/Username atau Password salah.',
+        });
+      }
     }
 
+    // 4. Autentikasi via Database CBT (Users & Students)
     const db = await getDb();
 
-    // 1. Check in users table (Admin)
-    const admin = db.queryOne('SELECT * FROM users WHERE username = ?', [username.trim()]);
+    // A. Cek Admin di tabel users
+    const admin = db.queryOne('SELECT * FROM users WHERE username = ?', [cleanIdentifier]);
     if (admin) {
-      const match = bcrypt.compareSync(password, admin.password_hash);
+      const match = bcrypt.compareSync(cleanPassword, admin.password_hash);
       if (match) {
         const sessionData: SessionData = {
           userId: admin.id,
@@ -191,7 +246,12 @@ router.post('/login', async (req: Request, res: Response) => {
           name: admin.name,
         };
         const token = createSessionToken(sessionData);
-        res.cookie('cbt_token', token, { httpOnly: true, maxAge: 86400000 * 7, sameSite: 'lax' });
+        res.cookie('cbt_token', token, {
+          httpOnly: true,
+          maxAge: 86400000 * 7,
+          sameSite: 'lax',
+          secure: process.env.NODE_ENV === 'production',
+        });
         return res.json({
           success: true,
           token,
@@ -200,20 +260,23 @@ router.post('/login', async (req: Request, res: Response) => {
       }
     }
 
-    // 2. Check in students table (Siswa)
+    // B. Cek Siswa di tabel students
     const student = db.queryOne(
       `SELECT s.*, c.nama_kelas 
        FROM students s 
        LEFT JOIN classes c ON s.class_id = c.id 
        WHERE (s.username = ? OR s.nis = ?)`,
-      [username.trim(), username.trim()]
+      [cleanIdentifier, cleanIdentifier]
     );
 
     if (student) {
       if (student.status !== 'aktif') {
-        return res.status(403).json({ success: false, message: 'Akun siswa Anda sedang dinonaktifkan oleh administrator.' });
+        return res.status(403).json({
+          success: false,
+          message: 'Akun siswa Anda sedang dinonaktifkan oleh administrator.',
+        });
       }
-      const match = bcrypt.compareSync(password, student.password_hash);
+      const match = bcrypt.compareSync(cleanPassword, student.password_hash);
       if (match) {
         const sessionData: SessionData = {
           userId: student.id,
@@ -224,7 +287,12 @@ router.post('/login', async (req: Request, res: Response) => {
           nis: student.nis,
         };
         const token = createSessionToken(sessionData);
-        res.cookie('cbt_token', token, { httpOnly: true, maxAge: 86400000 * 7, sameSite: 'lax' });
+        res.cookie('cbt_token', token, {
+          httpOnly: true,
+          maxAge: 86400000 * 7,
+          sameSite: 'lax',
+          secure: process.env.NODE_ENV === 'production',
+        });
         return res.json({
           success: true,
           token,
@@ -236,10 +304,26 @@ router.post('/login', async (req: Request, res: Response) => {
       }
     }
 
-    return res.status(401).json({ success: false, message: 'Username atau password salah.' });
+    // 5. Kredensial tidak cocok
+    return res.status(401).json({
+      success: false,
+      message: 'Email/Username atau Password salah.',
+    });
   } catch (error: any) {
-    console.error('Login error:', error);
-    return res.status(500).json({ success: false, message: 'Terjadi kesalahan pada server saat login.' });
+    // 6. Tangkap error secara spesifik dan tampilkan detail pesan error asli ke console log
+    console.error('[Login Handler Server Exception]:', {
+      name: error?.name,
+      message: error?.message,
+      code: error?.code,
+      stack: error?.stack,
+    });
+
+    const isDev = process.env.NODE_ENV !== 'production';
+    return res.status(500).json({
+      success: false,
+      message: 'Terjadi kesalahan pada server saat memproses login. Silakan coba beberapa saat lagi.',
+      error: isDev ? error?.message : undefined,
+    });
   }
 });
 

@@ -7,8 +7,12 @@ import initSqlJs, { Database } from 'sql.js';
 import fs from 'fs';
 import path from 'path';
 import bcrypt from 'bcryptjs';
-import { getPgPool, SUPABASE_SQL_STATEMENTS, ensurePgConfigResolved } from './pg.js';
+import { getPgPool, SUPABASE_SQL_STATEMENTS, ensurePgConfigResolved, pgConfig } from './pg.js';
 import { AsyncLocalStorage } from 'async_hooks';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // AsyncLocalStorage to capture query context per Express request
 export const dbStorage = new AsyncLocalStorage<Promise<any>[]>();
@@ -27,10 +31,60 @@ export interface SqlDatabase {
   persist(): void;
 }
 
+let cachedSqlJsPromise: Promise<any> | null = null;
+
+async function getSqlJsEngine() {
+  if (cachedSqlJsPromise) return cachedSqlJsPromise;
+
+  cachedSqlJsPromise = (async () => {
+    let wasmBinary: Buffer | undefined;
+
+    // 1. Cek jalur lokal di sistem berkas (node_modules)
+    const localCandidates = [
+      path.join(process.cwd(), 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
+      path.join(__dirname, 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
+      path.join(__dirname, '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
+      path.join(process.cwd(), 'sql-wasm.wasm'),
+    ];
+
+    for (const p of localCandidates) {
+      if (fs.existsSync(p)) {
+        try {
+          wasmBinary = fs.readFileSync(p);
+          break;
+        } catch (_) {}
+      }
+    }
+
+    // 2. Jika tidak ditemukan di sistem berkas (misal di Vercel serverless tanpa file asset), fetch binary buffer
+    if (!wasmBinary && typeof fetch === 'function') {
+      try {
+        const wasmRes = await fetch('https://unpkg.com/sql.js@1.14.2/dist/sql-wasm.wasm');
+        if (wasmRes.ok) {
+          wasmBinary = Buffer.from(await wasmRes.arrayBuffer());
+        }
+      } catch (err: any) {
+        console.warn('[SQL.js WASM Fetch Warning] Gagal mengunduh wasm binary dari CDN:', err?.message);
+      }
+    }
+
+    return initSqlJs(
+      wasmBinary
+        ? {
+            wasmBinary: wasmBinary.buffer.slice(
+              wasmBinary.byteOffset,
+              wasmBinary.byteOffset + wasmBinary.byteLength
+            ) as ArrayBuffer,
+          }
+        : {}
+    );
+  })();
+
+  return cachedSqlJsPromise;
+}
+
 export async function getDb(): Promise<SqlDatabase> {
-  const SQL = await initSqlJs({
-    locateFile: file => `https://unpkg.com/sql.js@1.14.2/dist/${file}`
-  });
+  const SQL = await getSqlJsEngine();
 
   if (!dbInstance) {
     dbInstance = new SQL.Database();
@@ -51,7 +105,7 @@ export async function getDb(): Promise<SqlDatabase> {
     await activeSyncPromise;
   }
 
-  return createWrapper(dbInstance);
+  return createWrapper(dbInstance!);
 }
 
 function translateSql(sql: string): string {
@@ -92,127 +146,180 @@ function translateSql(sql: string): string {
 }
 
 async function syncFromPostgres(db: Database) {
-  await ensurePgConfigResolved();
-  const pool = getPgPool();
-
-  // 1. Ensure table schema exists on Supabase PostgreSQL
+  // 1. Ensure target schema and migrations exist inside SQLite FIRST
   try {
-    await pool.query('SELECT 1 FROM public.users LIMIT 1');
-  } catch (err) {
-    console.info('[Supabase Sync] Schema not found. Running auto-migration on Supabase...');
-    for (const stmt of SUPABASE_SQL_STATEMENTS) {
+    let schemaSql = '';
+    const schemaPath = path.resolve(process.cwd(), 'server', 'schema.sql');
+    if (fs.existsSync(schemaPath)) {
+      schemaSql = fs.readFileSync(schemaPath, 'utf8');
+    } else {
+      schemaSql = LOCAL_SQLITE_SCHEMA;
+    }
+    db.run(schemaSql);
+
+    const sqliteMigrations = [
+      "ALTER TABLE questions ADD COLUMN opsi_e TEXT DEFAULT '';",
+      "ALTER TABLE questions ADD COLUMN kategori TEXT DEFAULT 'Umum';",
+      "ALTER TABLE questions ADD COLUMN jumlah_opsi INTEGER DEFAULT 4;",
+      "ALTER TABLE exam_participants ADD COLUMN last_heartbeat TEXT;",
+      "ALTER TABLE exam_participants ADD COLUMN current_question_index INTEGER DEFAULT 0;",
+      "ALTER TABLE exam_participants ADD COLUMN answered_count INTEGER DEFAULT 0;",
+      "ALTER TABLE exam_participants ADD COLUMN ip_address TEXT;",
+      `CREATE TABLE IF NOT EXISTS site_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT
+      );`
+    ];
+    for (const mig of sqliteMigrations) {
       try {
-        await pool.query(stmt);
-      } catch (e: any) {
-        if (!e.message.includes('already exists')) {
-          console.warn('[Supabase Sync Warning] migration detail:', e.message);
+        db.run(mig);
+      } catch (_) {}
+    }
+
+    // Seed default admin, classes, and students in SQLite if empty as resilient fallback
+    const localUsers = db.exec("SELECT COUNT(*) as count FROM users;");
+    const count = localUsers[0]?.values[0]?.[0] as number || 0;
+    if (count === 0) {
+      const now = new Date().toISOString();
+      const adminHash = bcrypt.hashSync('admin123', 10);
+      db.run(
+        `INSERT OR IGNORE INTO users (id, username, password_hash, role, name, created_at, updated_at) 
+         VALUES ('user-admin-1', 'admin', ?, 'admin', 'Administrator Utama', ?, ?)`,
+        [adminHash, now, now]
+      );
+
+      // Default Classes
+      db.run(
+        `INSERT OR IGNORE INTO classes (id, nama_kelas, tingkat, tahun_ajaran, status, created_at, updated_at)
+         VALUES ('cls-1', 'X IPA 1', '10', '2024/2025', 'aktif', ?, ?)`,
+        [now, now]
+      );
+
+      // Default Student (ahmad / siswa123)
+      const studentHash = bcrypt.hashSync('siswa123', 10);
+      db.run(
+        `INSERT OR IGNORE INTO students (id, nis, nama, username, password_hash, class_id, status, created_at, updated_at)
+         VALUES ('std-1', '1001', 'Ahmad Fadillah', 'ahmad', ?, 'cls-1', 'aktif', ?, ?)`,
+        [studentHash, now, now]
+      );
+
+      // Default Site Settings
+      db.run(`INSERT OR IGNORE INTO site_settings (key, value, updated_at) VALUES ('school_name', 'SMA Negeri 1 Nusantara', ?);`, [now]);
+      db.run(`INSERT OR IGNORE INTO site_settings (key, value, updated_at) VALUES ('login_title', 'Login Ujian CBT', ?);`, [now]);
+      db.run(`INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('school_name', 'SMA Negeri 1 Nusantara', ?);`, [now]);
+    }
+  } catch (localDbErr: any) {
+    console.error('[Database Local Schema Error]', localDbErr.message);
+  }
+
+  // 2. Connect and sync from Supabase PostgreSQL if credentials configured
+  try {
+    await ensurePgConfigResolved();
+    const pool = getPgPool();
+
+    // Cek apakah password atau DATABASE_URL telah dikonfigurasi
+    if (!pgConfig.password && !process.env.DATABASE_URL) {
+      console.info('[Supabase Sync Info] PGPASSWORD atau DATABASE_URL belum diatur. Menjalankan sistem dengan database lokal in-memory.');
+      return;
+    }
+
+    // Verify connection / table schema on Supabase PostgreSQL
+    try {
+      await pool.query('SELECT 1 FROM public.users LIMIT 1');
+    } catch (err: any) {
+      console.info('[Supabase Sync] Schema tidak ditemukan di PostgreSQL. Menjalankan auto-migration...');
+      for (const stmt of SUPABASE_SQL_STATEMENTS) {
+        try {
+          await pool.query(stmt);
+        } catch (e: any) {
+          if (!e.message.includes('already exists')) {
+            console.warn('[Supabase Sync Warning] migration detail:', e.message);
+          }
         }
       }
     }
-  }
 
-  // Ensure any existing database tables are fully up-to-date with new columns & relaxed constraints
-  const pgAlterations = [
-    "ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS opsi_e TEXT DEFAULT '';",
-    "ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS kategori TEXT DEFAULT 'Umum';",
-    "ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS jumlah_opsi INTEGER DEFAULT 4;",
-    "ALTER TABLE public.exam_participants ADD COLUMN IF NOT EXISTS last_heartbeat TEXT;",
-    "ALTER TABLE public.exam_participants ADD COLUMN IF NOT EXISTS current_question_index INTEGER DEFAULT 0;",
-    "ALTER TABLE public.exam_participants ADD COLUMN IF NOT EXISTS answered_count INTEGER DEFAULT 0;",
-    "ALTER TABLE public.exam_participants ADD COLUMN IF NOT EXISTS ip_address TEXT;",
-    "ALTER TABLE public.questions DROP CONSTRAINT IF EXISTS questions_jawaban_benar_check;",
-    "ALTER TABLE public.answers DROP CONSTRAINT IF EXISTS answers_answer_check;"
-  ];
-  for (const alt of pgAlterations) {
-    try {
-      await pool.query(alt);
-    } catch (e: any) {
-      console.warn('[PostgreSQL Alteration Warning]', e.message);
-    }
-  }
-
-  // 2. Seed initial data into Supabase if public.users is completely empty
-  try {
-    const userCountRes = await pool.query('SELECT COUNT(*) as count FROM public.users');
-    const count = parseInt(userCountRes.rows[0]?.count || '0', 10);
-    if (count === 0) {
-      console.info('[Supabase Sync] Supabase database is empty. Running initial seeds directly on Supabase...');
-      await seedInitialDataPostgres(pool);
-    }
-  } catch (seedErr: any) {
-    console.error('[Supabase Sync Error] Seeding failed:', seedErr.message);
-  }
-
-  // 3. Initialize target schema and migrations inside SQLite
-  let schemaSql = '';
-  const schemaPath = path.resolve(process.cwd(), 'server', 'schema.sql');
-  if (fs.existsSync(schemaPath)) {
-    schemaSql = fs.readFileSync(schemaPath, 'utf8');
-  } else {
-    schemaSql = LOCAL_SQLITE_SCHEMA;
-  }
-  db.run(schemaSql);
-
-  const sqliteMigrations = [
-    "ALTER TABLE questions ADD COLUMN opsi_e TEXT DEFAULT '';",
-    "ALTER TABLE questions ADD COLUMN kategori TEXT DEFAULT 'Umum';",
-    "ALTER TABLE questions ADD COLUMN jumlah_opsi INTEGER DEFAULT 4;",
-    "ALTER TABLE exam_participants ADD COLUMN last_heartbeat TEXT;",
-    "ALTER TABLE exam_participants ADD COLUMN current_question_index INTEGER DEFAULT 0;",
-    "ALTER TABLE exam_participants ADD COLUMN answered_count INTEGER DEFAULT 0;",
-    "ALTER TABLE exam_participants ADD COLUMN ip_address TEXT;",
-    `CREATE TABLE IF NOT EXISTS site_settings (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL,
-      updated_at TEXT
-    );`
-  ];
-  for (const mig of sqliteMigrations) {
-    try {
-      db.run(mig);
-    } catch (_) {}
-  }
-
-  // 4. Fetch all rows from PostgreSQL and sync into SQL.js memory database sequentially
-  const tables = [
-    'users',
-    'classes',
-    'students',
-    'question_banks',
-    'questions',
-    'exams',
-    'exam_participants',
-    'answers',
-    'settings',
-    'site_settings'
-  ];
-
-  for (const table of tables) {
-    try {
-      const pgRes = await pool.query(`SELECT * FROM public.${table}`);
-
-      // Clear local rows to receive the latest data
-      db.run(`DELETE FROM ${table};`);
-
-      if (pgRes.rows.length === 0) continue;
-
-      const columns = Object.keys(pgRes.rows[0]);
-      const placeholders = columns.map(() => '?').join(', ');
-      const insertSql = `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${placeholders});`;
-
-      for (const row of pgRes.rows) {
-        const vals = columns.map(col => {
-          const val = row[col];
-          if (val instanceof Date) {
-            return val.toISOString();
-          }
-          return val;
-        });
-        db.run(insertSql, vals);
+    // Ensure any existing database tables are fully up-to-date with new columns & relaxed constraints
+    const pgAlterations = [
+      "ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS opsi_e TEXT DEFAULT '';",
+      "ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS kategori TEXT DEFAULT 'Umum';",
+      "ALTER TABLE public.questions ADD COLUMN IF NOT EXISTS jumlah_opsi INTEGER DEFAULT 4;",
+      "ALTER TABLE public.exam_participants ADD COLUMN IF NOT EXISTS last_heartbeat TEXT;",
+      "ALTER TABLE public.exam_participants ADD COLUMN IF NOT EXISTS current_question_index INTEGER DEFAULT 0;",
+      "ALTER TABLE public.exam_participants ADD COLUMN IF NOT EXISTS answered_count INTEGER DEFAULT 0;",
+      "ALTER TABLE public.exam_participants ADD COLUMN IF NOT EXISTS ip_address TEXT;",
+      "ALTER TABLE public.questions DROP CONSTRAINT IF EXISTS questions_jawaban_benar_check;",
+      "ALTER TABLE public.answers DROP CONSTRAINT IF EXISTS answers_answer_check;"
+    ];
+    for (const alt of pgAlterations) {
+      try {
+        await pool.query(alt);
+      } catch (e: any) {
+        // Safe alteration warning
       }
-    } catch (err: any) {
-      console.error(`[Supabase Sync] Table ${table} sync failed:`, err.message);
     }
+
+    // Seed initial data into Supabase if public.users is completely empty
+    try {
+      const userCountRes = await pool.query('SELECT COUNT(*) as count FROM public.users');
+      const count = parseInt(userCountRes.rows[0]?.count || '0', 10);
+      if (count === 0) {
+        console.info('[Supabase Sync] Supabase database kosong. Menjalankan seed awal di Supabase...');
+        await seedInitialDataPostgres(pool);
+      }
+    } catch (seedErr: any) {
+      console.warn('[Supabase Sync Warning] Seeding Supabase notice:', seedErr.message);
+    }
+
+    // 3. Fetch all rows from PostgreSQL and sync into SQL.js memory database sequentially
+    const tables = [
+      'users',
+      'classes',
+      'students',
+      'question_banks',
+      'questions',
+      'exams',
+      'exam_participants',
+      'answers',
+      'settings',
+      'site_settings'
+    ];
+
+    for (const table of tables) {
+      try {
+        const pgRes = await pool.query(`SELECT * FROM public.${table}`);
+
+        if (pgRes.rows.length === 0) continue;
+
+        // Clear local rows to receive the latest data from PostgreSQL
+        db.run(`DELETE FROM ${table};`);
+
+        const columns = Object.keys(pgRes.rows[0]);
+        const placeholders = columns.map(() => '?').join(', ');
+        const insertSql = `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${placeholders});`;
+
+        for (const row of pgRes.rows) {
+          const vals = columns.map(col => {
+            const val = row[col];
+            if (val instanceof Date) {
+              return val.toISOString();
+            }
+            return val;
+          });
+          db.run(insertSql, vals);
+        }
+      } catch (tableErr: any) {
+        console.warn(`[Supabase Sync] Sinkronisasi tabel ${table} dilewati:`, tableErr.message);
+      }
+    }
+  } catch (pgConnErr: any) {
+    console.error('[Supabase PostgreSQL Connection Error]: Gagal menghubungkan ke Supabase PostgreSQL:', {
+      message: pgConnErr.message,
+      code: pgConnErr.code,
+      host: pgConnErr.address || process.env.PGHOST,
+      hint: 'Periksa DATABASE_URL atau PGPASSWORD di dashboard Vercel / file .env'
+    });
   }
 }
 

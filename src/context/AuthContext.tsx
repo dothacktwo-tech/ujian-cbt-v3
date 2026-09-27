@@ -6,7 +6,7 @@ interface AuthContextType {
   user: User | null;
   loading: boolean;
   settings: AppSettings;
-  login: (username: string, password: string) => Promise<{ success: boolean; message?: string; role?: string }>;
+  login: (username: string, password: string) => Promise<{ success: boolean; message?: string; role?: string; statusCode?: number }>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
   refreshSettings: () => Promise<void>;
@@ -118,18 +118,47 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const login = async (username: string, password: string) => {
-    const res = await apiRequest('/api/login', {
-      method: 'POST',
-      body: JSON.stringify({ username, password }),
-    });
+    const cleanUsername = typeof username === 'string' ? username.trim() : '';
+    const cleanPassword = typeof password === 'string' ? password : '';
 
-    if (res.success && res.token && res.user) {
-      setStoredToken(res.token);
-      setUser(res.user);
-      return { success: true, role: res.user.role };
+    if (!cleanUsername || !cleanPassword) {
+      return {
+        success: false,
+        message: 'Silakan masukkan username/email dan password Anda.',
+        statusCode: 400,
+      };
     }
 
-    return { success: false, message: res.message || 'Login gagal.' };
+    try {
+      const res = await apiRequest('/api/login', {
+        method: 'POST',
+        body: JSON.stringify({ username: cleanUsername, password: cleanPassword }),
+      });
+
+      if (res.success && res.token && res.user) {
+        setStoredToken(res.token);
+        setUser(res.user);
+        return { success: true, role: res.user.role, statusCode: 200 };
+      }
+
+      console.warn('[AuthContext] Login gagal:', {
+        statusCode: res.statusCode,
+        message: res.message,
+      });
+
+      return {
+        success: false,
+        message: res.message || (res.statusCode === 401 ? 'Email/Username atau Password salah.' : 'Login gagal.'),
+        statusCode: res.statusCode || 401,
+      };
+    } catch (err: any) {
+      console.error('[AuthContext] Login Exception:', err);
+      return {
+        success: false,
+        message: err?.message || 'Tidak dapat terhubung ke server CBT.',
+        statusCode: 0,
+      };
+    }
   };
 
   const logout = async () => {

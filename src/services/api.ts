@@ -18,7 +18,7 @@ export const getStoredToken = () => {
 export async function apiRequest<T = any>(
   endpoint: string,
   options: RequestInit = {}
-): Promise<ApiResponse<T>> {
+): Promise<ApiResponse<T> & { statusCode?: number }> {
   const token = getStoredToken();
   const headers = new Headers(options.headers || {});
 
@@ -36,20 +36,53 @@ export async function apiRequest<T = any>(
       headers,
     });
 
-    const data = await res.json().catch(() => ({
-      success: res.ok,
-      message: res.statusText || 'Terjadi kesalahan pada server.',
-    }));
+    let data: any;
+    try {
+      data = await res.json();
+    } catch {
+      data = {
+        success: res.ok,
+        message: res.statusText || (res.ok ? 'Sukses' : 'Terjadi kesalahan pada respon server.'),
+      };
+    }
 
-    if (!res.ok && data.success === undefined) {
+    data.statusCode = res.status;
+
+    if (!res.ok) {
       data.success = false;
+
+      // Log server error details in browser console for fast debugging
+      console.error(`[API Error ${res.status}]`, {
+        endpoint,
+        status: res.status,
+        statusText: res.statusText,
+        response: data,
+      });
+
+      if (!data.message) {
+        if (res.status === 401) {
+          data.message = 'Email/Username atau Password salah.';
+        } else if (res.status === 403) {
+          data.message = 'Akses ditolak: Anda tidak memiliki izin untuk tindakan ini.';
+        } else if (res.status === 404) {
+          data.message = 'Endpoint atau data yang diminta tidak ditemukan.';
+        } else if (res.status >= 500) {
+          data.message = data.error 
+            ? `Kesalahan Server: ${data.error}`
+            : 'Terjadi kesalahan pada server saat memproses permintaan.';
+        } else {
+          data.message = 'Permintaan gagal diproses.';
+        }
+      }
     }
 
     return data;
   } catch (err: any) {
+    console.error('[API Network/Fetch Error]', endpoint, err);
     return {
       success: false,
-      message: err.message || 'Koneksi jaringan terputus atau server tidak merespon.',
+      statusCode: 0,
+      message: err?.message || 'Koneksi jaringan terputus atau server tidak merespon.',
     };
   }
 }
